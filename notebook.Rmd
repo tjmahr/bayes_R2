@@ -1,0 +1,124 @@
+---
+title: "Test _R_^2^ calculation"
+author: "TJ Mahr"
+date: "July 26, 2017"
+output: 
+  rmarkdown::github_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, collapse = TRUE, comment = "#>")
+```
+
+This document is just my (tjmahr's) notes on the article... I have nothing to do
+with its the paper besides being a studious reader.
+
+*** 
+
+I'm curious how the calculation of _R_^2^ compares to a function I wrote for my 
+own analyses. 
+
+This code is the function by the Stan Team.
+
+```{r}
+library(rstanarm)
+library(ggplot2)
+library(bayesplot)
+
+# Compute Bayesian R-squared for linear and
+# generalized linear models.
+#
+# @param fit A fitted model object returned by stan_glm.
+# @return A vector of R-squared values with length equal to
+#      the number of posterior draws.
+#
+bayes_R2 <- function(fit) {
+  y <- get_y(fit)
+  ypred <- posterior_linpred(fit, transform = TRUE)
+  if (family(fit)$family == "binomial" && NCOL(y) == 2) {
+    trials <- rowSums(y)
+    y <- y[, 1]
+    ypred <- ypred %*% diag(trials)
+  }
+  e <- -1 * sweep(ypred, 2, y)
+  var_ypred <- apply(ypred, 1, var)
+  var_e <- apply(e, 1, var)
+  var_ypred / (var_ypred + var_e)
+}
+```
+
+Here's the classical values.
+
+```{r}
+library(dplyr)
+
+m_glm <- glm(weight ~ group, PlantGrowth, family = gaussian())
+modelr::rsquare(m_glm, PlantGrowth)
+
+m_lm <- lm(weight ~ group, PlantGrowth)
+modelr::rsquare(m_lm, PlantGrowth)
+```
+
+Here's my calculation.
+
+```{r}
+m <- stan_glm(weight ~ group, PlantGrowth, family = gaussian(), prior = normal(0, 1))
+m
+
+naive_r2 <- tristan::calculate_model_r2(m)
+tristan::tidy_etdi(naive_r2, c(.95, .9, .8))
+tristan::tidy_median(naive_r2)
+
+# Point value
+tristan::calculate_r2(PlantGrowth$weight, predict(m))
+```
+
+Here is theirs.
+
+```{r}
+stanteam_r2 <- bayes_R2(m)
+tristan::tidy_etdi(stanteam_r2, c(.95, .9, .8))
+tristan::tidy_median(stanteam_r2)
+```
+
+This is kind of nutty.
+
+```{r}
+df <- list(naive = naive_r2,
+  stanteam = stanteam_r2) %>% 
+  tibble::enframe() %>% 
+  tidyr::unnest(value)
+
+library(ggplot2)
+
+ggplot(df) + 
+  aes(x = value) + 
+  geom_histogram() + 
+  theme_grey() + 
+  facet_grid(name ~ .)
+```
+
+It looks like their median value is comparable to the modal _R_^2^ value in my 
+implementation. That's nice... The median and interval stats in my
+implementation are kind of worthless because the median _R_^2^ does not match
+the _R_^2^ produced by the median model parameters..
+
+To be clear, my naive implementation just does a really dumb calculation on each
+posterior sample. Conceptually, each sample is its own lm model and each model
+attains a certain _R_^2^ value so we have a distribution of _R_^2^ values.
+
+```{r}
+tristan::calculate_model_r2
+
+tristan::calculate_r2
+
+# To convince myself that it works
+y_obs <- m_lm$model$weight
+y_fits <- predict(m_lm)
+
+tristan::calculate_r2(y_obs, y_fits)
+modelr::rsquare(m_lm, PlantGrowth)
+
+```
+
+To do... study what their implementation does.
